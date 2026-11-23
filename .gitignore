@@ -1,0 +1,8 @@
+# Local virtualenv used to run the acceptance suite
+# (recreate with: python3 -m venv .venv && .venv/bin/pip install pytest requests pyserial esptool)
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/

@@ -1,0 +1,11 @@
+[Unit]
+Description=RFC2217 Serial Portal
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/rfc2217-portal
+Restart=on-failure
+User=root
+
+[Install]
+WantedBy=multi-user.target

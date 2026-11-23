@@ -1,0 +1,16 @@
+{
+  "si5351": {
+    "bus": 1,
+    "address": 96,
+    "default_channel": 0
+  },
+  "gpclk": {
+    "default_pin": 5
+  },
+  "pe4302": {
+    "enabled": true,
+    "data_pin": 13,
+    "clk_pin": 12,
+    "le_pin": 6
+  }
+}

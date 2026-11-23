@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.coverage
+.claude-data/
+.claude/settings.local.json
+*.log
+
+# ESP-IDF build artifacts — but never the Method skill at .claude/skills/build/,
+# which this rule silently swallowed once (SKILL.md missing from the pushed repo)
+build/
+!.claude/skills/build/
+!.claude/skills/build/**
+sdkconfig
+sdkconfig.old
+
+# Fetched by the ESP-IDF component manager from idf_component.yml.
+# dependencies.lock IS committed, so builds are reproducible.
+managed_components/
+
+# Scratch. This makes the rule true rather than something someone has to
+# remember, and it is where secrets get dropped.
+tmp/
+*.env
+
+# Assistant configuration, not a repo artefact. It configures one person's
+# working copy; a committed copy becomes an instruction to everyone who clones.
+CLAUDE.md
+
+# Personal devcontainer variant (mounts host secrets/keys) — local only
+.devcontainer/personal/
