@@ -1306,12 +1306,19 @@ def _jtag_capable(dev: dict) -> bool:
 
     `detected_chip` is populated by auto-debug, which only runs for parts with
     a built-in USB-JTAG interface. A device behind a UART bridge (CP2102,
-    CH340) has no JTAG, so the field is None *by design* — asserting a chip for
-    it tests a premise the portal never promised.
+    CH340, CH343/CH9102) has no JTAG, so the field is None *by design* —
+    asserting a chip for it tests a premise the portal never promised.
+
+    Detect the built-in JTAG positively, by the Espressif USB vendor ID, rather
+    than by matching bridge product strings. An allowlist only recognises the
+    bridges someone thought of: CH343 reports "USB Single Serial", which
+    matched none of the previous entries, so a board with an on-board hub (an
+    S3 "Pico"-style part exposing native USB and a CH343 side by side) had its
+    bridge port treated as a JTAG-capable slot and failed every per-slot chip
+    assertion with "no chip detected".
     """
-    products = " ".join(u.get("product", "") for u in dev.get("usb_devices", []))
-    bridge = any(k in products for k in ("CP210", "CH340", "FT232", "UART Bridge"))
-    return not bridge
+    return any(u.get("vid_pid", "").startswith("303a:")
+               for u in dev.get("usb_devices", []))
 
 
 def _flash_device(testbench, chip, target_dir):
