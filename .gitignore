@@ -10,3 +10,8 @@ __pycache__/
 # Downloaded test-partner firmware bundles (recreate with ./fetch-test-partner.sh)
 .fw/
 .pr-upstream/
+
+# Raw JSON captured from the live bench while writing the plugin API contract.
+# Local evidence only; the observations it supports are quoted in
+# TESTBENCH-PLUGIN-API.md.
+.bench-samples/

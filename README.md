@@ -14,8 +14,32 @@ generation and hardware debugging from one place.
 | Path | Contents |
 |---|---|
 | `TESTBENCH-BUILD-GUIDE.md` | The guide: parts list, assembly, Pi setup, OS/flashing, USB slot model, ESP-Prog/JTAG wiring, commissioning checklist, and the gotchas that actually bite |
+| `TESTBENCH-PLUGIN-API.md` | Operating contract for a client plugin that drives the bench: slot model, canonical lifecycle, every available endpoint with its real semantics, worked flows, and the traps that break naive clients |
+| `testbench-api-manifest.json` | Machine-readable companion to the above: 72 endpoints with parameters, defaults, timeouts, availability and prerequisites |
 | `claude_git_repo/Embedded-AI-Harness-main/` | Reference copy of the upstream project as inspected during the build, including a patched `pi/install.sh` |
 | `.gitignore` | Excludes the local virtualenv and Python caches |
+
+## Driving the bench from a plugin
+
+`TESTBENCH-PLUGIN-API.md` + `testbench-api-manifest.json` are written to be read by a code
+generator: the Markdown carries the semantics and the traps, the JSON carries the endpoint
+inventory. Generate one tool per endpoint whose `availability` is `available`, skip
+`unavailable`, gate `partial` behind the `prerequisite` it names, and never emit the two
+`never_call` udev/dnsmasq callbacks.
+
+Both files were reconciled against the running bench and the portal source, which corrected
+several things the upstream documentation states differently. The four that generate the most
+broken clients:
+
+- **`ok: true` does not mean the operation worked.** `serial/monitor` returns `ok:true` with
+  `matched:false` on timeout, and `human-interaction` returns `ok:true` with `confirmed:false`.
+  Check the endpoint's own success field too.
+- **Slot leases are advisory.** No work handler consults the grant table, so a lease neither
+  blocks your own flash nor protects you from another client.
+- **`/api/flash` does not refuse on a live debug session** — it stops the session and restores
+  it afterwards with `reset run`.
+- **A `bin@` offset without a `0x` prefix is parsed as decimal** (`int(offset, 0)`), so
+  `bin@8000` writes to `0x1F40`, not `0x8000`.
 
 ## Hardware this was written against
 
