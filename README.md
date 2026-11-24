@@ -36,6 +36,40 @@ from its own state file on every boot, `hostapd` fails with
 `Failed to set beacon parameters` and the test AP never radiates. Upstream's
 Bluetooth-only unblock does not cover this case.
 
+## Running the acceptance suite
+
+The suite is HTTP-only against the bench's portal, but three details are easy
+to get wrong:
+
+```bash
+# 1. Toolchain in a venv. esptool is required even though the tests are
+#    "HTTP-only": the flash tests shell out to `python3 -m esptool` over the
+#    bench's RFC2217 proxy, and they resolve `python3` from PATH.
+python3 -m venv .venv
+.venv/bin/pip install pytest requests pyserial paho-mqtt esptool
+
+# 2. Fetch the partner firmware (no local ESP-IDF needed — CI publishes it).
+./fetch-test-partner.sh esp32s3
+
+# 3. Run from OUTSIDE the repo root: the repository's own pytest/ directory
+#    shadows the pytest package, so `python3 -m pytest` from the root fails
+#    with "No module named pytest.__main__".
+REPO="$PWD"
+TESTS="$REPO/claude_git_repo/Embedded-AI-Harness-main/pytest/testbench_test.py"
+cd /tmp
+PATH="$REPO/.venv/bin:$PATH" \
+WT_TEST_PARTNER_IMAGE="$REPO/.fw/test-partner-esp32s3" \
+  python -m pytest "$TESTS" --wt-url http://<bench-ip>:8080 --run-dut
+```
+
+`--run-dut` enables the tests that need a partner board; without it they skip.
+`WT_TEST_PARTNER_IMAGE` matters because `WT-1800` flashes a throwaway image over
+the partner to prove flashing works — without a bundle to restore from, the next
+run starts against a board that answers nothing.
+
+Expected result on a bench with an ESP32-S3 partner, no SDR and no Si5351:
+**97 passed, 7 skipped** — the skips are all absent-hardware preconditions.
+
 ## Provenance and licence
 
 The guide and the installer patch in this repository are original work.
