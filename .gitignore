@@ -9,3 +9,4 @@ __pycache__/
 
 # Downloaded test-partner firmware bundles (recreate with ./fetch-test-partner.sh)
 .fw/
+.pr-upstream/
