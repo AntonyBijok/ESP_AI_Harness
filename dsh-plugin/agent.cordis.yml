@@ -1,0 +1,246 @@
+# The `esp-aiclp` agent preset: ESP32 development against a real testbench, with the
+# AI Closed-Loop Programming discipline as the working method.
+#
+# Derived from the shipped `standard` preset, so everything a coding agent needs is
+# here unchanged. What is added:
+#
+#   · `esp-aiclp`        — this preset's own plugin: 25 bench tools generated from the
+#                          bench's API manifest, plus the loop's prompt section.
+#   · `skills/`          — the AICLP phase skills and the instrument skills, carried in
+#                          this directory so the preset is self-contained.
+#
+# What is deliberately NOT here: `tool-cordis`. This is a working preset, not the
+# authoring one — use the `cordis` preset to change this file.
+#
+# A service row in a preset MUST sit inside a group carrying an `isolate` realm, or it
+# publishes into the process-global realm and collides with a second session. The
+# groups below (`planning`, `compaction`, `delegation`) are exactly the ones `standard`
+# isolates, for the same reasons.
+
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: |-
+      You are an ESP32 firmware engineer powered by the {{model}} model, working on the DeepSeek Harness. Your working directory is {{cwd}}.
+
+      You are harnessed to a real testbench: a Raspberry Pi holding ESP32 boards, exposed as one HTTP API and reachable through your `tb_*` tools. That is the difference between you and an ordinary coding agent — you can flash a board, read its console, join it to a network you control, and watch it fail. Use it. Firmware you have not run on silicon is a hypothesis, and this session's whole purpose is to turn hypotheses into measurements.
+
+      The method is AI Closed-Loop Programming. The spec is the setpoint, the chip is the plant, the tests are the sensor, and you are the controller: code, build, flash, observe, correct — until the tests derived from the spec run clean. The loop exits at zero. "I wrote it" is not an exit condition; "the test ran green on the board" is.
+
+      Four phases, each ending at a gate derived from project state and never declared: **define** (the FSD: atomic, falsifiable requirements, each carrying the contract that proves it), **harness** (strap this project to the loop), **commission** (prove this board, its wiring and its peers work here, so a red test means the code), **build** (run the loop). Load the matching skill when its gate is in play.
+
+      Two rules bind everything you do. **No code without a clause** — work no requirement covers enters through the spec or not at all. **A change is done when its requirement is met and the journey still runs.**
+
+      Ask before you flash something that is not obviously reversible, and never leave hardware in a state you would not want to find it.
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# `shell-env` stays in the HOST composition: it is injected before any session
+# exists, so there is no agent to key it by. Both tools consume the host registry
+# from here; their executors (`bash-sandbox`/`pwsh-sandbox`) are host-plane too.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# Both register into the host `tools` registry and provide nothing, so they need
+# no realm. The `fs` service and its policy stay in the host.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ─────────────────────────────────────────────────────────
+
+# ESP-IDF builds and `pio run` are long, and they are exactly what a background job
+# is for: start the build, keep reading the board while it links, collect it when it
+# finishes. Only the model-facing controls are here; the registry is host-plane.
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+# The AICLP loop is a convergence objective with no single deliverable, which is
+# what a goal is for: the objective survives autonomy rounds and a context fold,
+# and `blocked` is reserved for a condition that genuinely persists.
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+# Plan state is per-agent by nature, so an entry-local realm is the correct
+# lifetime rather than a workaround.
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              On this preset, non-mutating also covers hardware: you may read the bench (tb_status, tb_endpoints, tb_serial_output, tb_log) while planning, but do not flash, reset, acquire a slot or drive a DUT — a plan is not a licence to touch the plant.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner must
+# share this realm rather than sit outside it. `tokenMeter` stays host-plane — a
+# preset only chooses whether its agent compacts at all.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation, workflows, gates ────────────────────────────────────────────
+
+# The `subagents` registry and its backends live in the HOST composition — it is a
+# process singleton and a provider name may only be registered once. This preset
+# contributes the delegation TOOLS, which resolve that host registry.
+#
+# `workflows` is different: nothing outside an agent reads it, so every row that
+# reaches it shares one entry-local realm here.
+#
+# These rows are not generic delegation on this preset. `subagent` is how a gate gets
+# its FRESH CHECKER — give it the gate file and the repository, never a summary of
+# the work — and `workflow` is how a requirement list is audited in one pass rather
+# than eighteen. `ralph` is for a gate that keeps coming back SHUT, where a genuinely
+# fresh agent each round is the honest shape of the retry.
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        backgroundMode: continuable
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 32
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# Datasheets, errata and registry lookups are part of firmware work. The `web`
+# service and its search provider stay in the host composition; only the
+# model-facing tool is per-session.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
+
+# ── the bench ───────────────────────────────────────────────────────────────
+
+# This preset's own plugin. The specifier is relative, which the preset loader
+# resolves against THIS directory — so the plugin travels with the preset and needs
+# no install step and no package name.
+#
+# `baseUrl` is the bench. The default comes from the vendored manifest, so an empty
+# config works; set it here to point at a different bench without editing code.
+#
+# TRUST: these tools flash firmware, reset boards and re-provision networks on real
+# hardware. The bench API itself has no authentication (§1 of TESTBENCH-PLUGIN-API.md),
+# so the network is the security boundary — keep the bench on a network you trust.
+- id: esp-aiclp
+  name: ./plugin/index.js
+  config:
+    baseUrl: http://192.168.0.29:8080
+    owner: dsh-esp-aiclp
+    floorTimeoutMs: 15000
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+# The skill REGISTRY lives in the host composition and is layered per scope: these
+# rows register into THIS preset's layer of it, so they need no realm.
+#
+# `customSkillDirs` points at this preset's own `skills/` directory, resolved from
+# `baseUrl` so it follows the preset wherever it is installed. The AICLP phase skills
+# and the instrument skills both live there; `tool-skill` gives the agent the catalog
+# and the loader.
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'

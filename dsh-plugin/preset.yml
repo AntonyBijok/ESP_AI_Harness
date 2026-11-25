@@ -1,0 +1,5 @@
+name: ESP32 AICLP
+description: >
+  ESP32 development on a real testbench. Drives the Embedded AI Harness bench — flash, serial,
+  Wi-Fi, BLE, MQTT, JTAG — through 25 generated tools, and runs AI Closed-Loop Programming
+  (define → harness → commission → build) with fresh-checker gates, goals and subagents.

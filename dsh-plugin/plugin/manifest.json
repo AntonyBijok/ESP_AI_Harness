@@ -1,0 +1,1229 @@
+{
+  "manifest_version": "1.1",
+  "title": "Embedded AI Harness — testbench API manifest",
+  "description": "Machine-readable operating contract for a client plugin driving the testbench. Companion to TESTBENCH-PLUGIN-API.md, which carries the rationale, worked flows and traps; read both. Emit one tool per endpoint whose `availability` is 'available'. 'partial' means emit it PLUS the runtime gate named in `prerequisite`. 'unavailable' and 'never_call' mean do not emit — `never_call` covers the two udev/dnsmasq callbacks that must never be sent by a client.",
+  "changelog": "1.1 corrects four claims that live probing and source reading disproved: (a) ok:true is not sufficient for success on serial_monitor, human_interaction and net_portscan; (b) /api/flash does NOT refuse on a debug session — it stops and restores it, so the old 409 status code was removed; (c) slot leases are advisory and enforce nothing, so slot_acquire's notes changed; (d) a `bin@` offset without a 0x prefix is parsed as DECIMAL by int(offset, 0).",
+  "source_of_truth": "Derived from pi/portal.py and friends in claude_git_repo/Embedded-AI-Harness-main/, cross-checked against live responses from the bench. Where upstream docs disagree with the portal code, the portal code wins.",
+
+  "bench": {
+    "base_url": "http://192.168.0.29:8080",
+    "hostname": "testbench-5c62",
+    "hostname_note": "Informational only. Never address the bench by hostname or .local; always use the IP.",
+    "model": "Raspberry Pi 4 Model B, 2 GB, Raspberry Pi OS bookworm",
+    "management_interface": "eth0 on 192.168.0.0/24 (all client traffic)",
+    "test_radio_interface": "wlan0, SoftAP 192.168.4.1/24 when the AP is up",
+    "slots_configured": 7,
+    "slots_present_at_capture": 2,
+    "attached": [
+      {
+        "slot": "SLOT4",
+        "device": "ESP32-S3 board, native USB-JTAG",
+        "vid_pid": "303a:1001",
+        "detected_chip": "esp32s3",
+        "devnode": "/dev/ttyACM0"
+      },
+      {
+        "slot": "SLOT6",
+        "device": "same board's CH343 UART bridge (no JTAG TAP, correctly chip-less)",
+        "vid_pid": "1a86:55d3",
+        "detected_chip": null,
+        "devnode": "/dev/ttyACM1"
+      }
+    ],
+    "discovery": {
+      "protocol": "udp",
+      "port": 5888,
+      "request": "DISCOVER",
+      "response_json": {
+        "service": "testbench",
+        "hostname": "testbench-5c62",
+        "ip": "192.168.0.29",
+        "port": 8080
+      },
+      "note": "Unicast to a known IP works. Broadcast does not cross a container bridge, so prefer an operator-supplied URL and use this only as fallback."
+    }
+  },
+
+  "conventions": {
+    "auth": {
+      "scheme": "none",
+      "detail": "No token, header, session, cookie or IP allow-list exists. The API is bound to 0.0.0.0:8080. Do not invent an auth flow; assume the network is the trust boundary.",
+      "cors": "Access-Control-Allow-Origin: * on all JSON responses; OPTIONS preflight allowed for GET, POST, DELETE."
+    },
+    "success_test": "Branch on the JSON body's `ok` field, never on the HTTP status code alone. Many handlers return {\"ok\": false, ...} with status 200.",
+    "success_is_not_sufficient": "`ok: true` means the REQUEST worked, not that the OPERATION did. Three endpoints answer ok:true while reporting the shortfall in their own field; a client that checks only `ok` reports a timeout as a pass.",
+    "success_predicates": {
+      "how_to_use": "Prefer each endpoint's own `success_predicate` field where present. This map names the same rules by id for convenience; every other endpoint needs only `ok == true`.",
+      "serial_monitor": "require matched == true (on timeout the reply is ok:true, matched:false, line:null, output:[])",
+      "human_interaction": "require confirmed == true (on timeout: ok:true, confirmed:false, timeout:true; an explicit Cancel is confirmed:false with timeout:false)",
+      "net_portscan": "require complete == true (truncated scan: ok:true, complete:false)",
+      "bench_reset": "require ok == true AND errors == []",
+      "firmware_download": "non-JSON: require HTTP 200 and a non-empty body; an error is a JSON body with no ok key"
+    },
+    "leases_are_advisory": "The slot grant table is consulted ONLY by slot/acquire, slot/renew, slot/release and slot/mode. No work handler (flash, serial, debug, wifi) checks it. A lease coordinates cooperating clients and makes intent visible through GET /api/slot/mode; it does NOT provide mutual exclusion. Holding one does not block your own flash, and another client's lease will not make your flash fail.",
+    "ok_absent_bodies": "Some failure bodies carry NO `ok` key: route-level 404s return {\"error\":\"not found\"}, and GET /api/wifi/scan while the AP is running returns HTTP 503 with {\"error\":\"cannot scan while the AP is running ...\"}. Always read body.get(\"ok\"), never body[\"ok\"].",
+    "run_exclusivity": "POST /api/bench/reset stops all debug sessions, releases all grants, restarts every proxy, stops the SoftAP and clears a pending operator prompt. With no authentication there is no run lock, so two plugins sharing the bench will destroy each other's state. Treat the bench as single-tenant for the duration of a run and tell the operator.",
+    "error_shapes": {
+      "handler_error": "{\"ok\": false, \"error\": \"<message>\"} — usually with a status code, sometimes 200",
+      "route_404": "{\"error\": \"not found\"} — NO ok key; use body.get(\"ok\") to avoid KeyError",
+      "binary_endpoint_error": "{\"error\": ...} — also without ok"
+    },
+    "malformed_json": "A body that is not valid JSON raises unhandled in the portal and closes the connection instead of returning 400. Treat a closed connection as a client defect.",
+    "body_limits": "No application-level limit on request or upload size; bodies are read fully into memory by Content-Length.",
+    "buffers": {
+      "activity_log_lines": 200,
+      "udp_log_lines": 2000,
+      "serial_ring_lines_per_slot": 1000
+    },
+    "blocking_budgets_seconds": {
+      "serial_monitor": "client-supplied timeout, default 10",
+      "wifi_events": "client-supplied timeout, default 0 (returns immediately)",
+      "human_interaction": "client-supplied timeout, default 120, uncapped by the server",
+      "net_portscan": "clamped 1..600, default 120",
+      "flash": 300,
+      "flash_read": 120,
+      "chip_info": 60,
+      "ota": 180,
+      "serial_gpio_test": 15,
+      "serial_reset": 7,
+      "bench_reset": 90
+    },
+    "slot_states": ["absent", "idle", "resetting", "monitoring", "flapping", "recovering", "download_mode", "debugging", "flashing"],
+    "slot_lease_modes": ["idle", "flashing", "resetting", "monitoring", "flapping", "recovering", "download", "debugging"],
+    "slot_lease_ttl": {"default_s": 60, "min_s": 1, "max_s": 3600},
+    "wifi_modes": ["wifi-testing", "serial-interface"],
+    "gpio_allowlist": [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+  },
+
+  "ports": {
+    "http_api": {"port": 8080, "protocol": "tcp", "client_usable": true, "note": "Everything; prefer this over any direct socket."},
+    "rfc2217_serial": {"port": "per slot: read tcp_port from /api/devices (4004 for SLOT4)", "protocol": "tcp/rfc2217", "client_usable": "restricted", "note": "Single client. Negotiation asserts DTR/RTS, which halts native-USB boards. Use /api/serial/write instead unless you are esptool."},
+    "readonly_fanout": {"port": "per slot: monitor_port = tcp_port + 1000 (5004 for SLOT4)", "protocol": "tcp raw bytes", "client_usable": true, "note": "Plain byte stream, no control lines, many concurrent readers. The safe way to watch a slot."},
+    "gdb": {"port": "per slot: gdb_port (3336 for SLOT4)", "protocol": "tcp/gdb-rsp", "client_usable": true, "note": "Only while a debug session is running."},
+    "openocd_telnet": {"port": "per slot: openocd_telnet_port (4447 for SLOT4)", "protocol": "tcp/telnet", "client_usable": true, "note": "Only while a debug session is running."},
+    "openocd_tcl": {"port": "6666 + (gdb_port - 3333)", "protocol": "tcp", "client_usable": "rarely", "note": "Derived, not exposed in /api/devices."},
+    "udp_log_receiver": {"port": 5555, "protocol": "udp", "client_usable": "duts_only", "note": "DUTs send here; read via GET /api/udplog."},
+    "discovery_beacon": {"port": 5888, "protocol": "udp", "client_usable": true},
+    "mqtt_broker": {"port": 1883, "protocol": "tcp/mqtt", "client_usable": true, "note": "Anonymous, all interfaces."},
+    "tls_mirror": {"port": 8443, "protocol": "tcp/https", "client_usable": true, "note": "Self-signed; used as an untrusted peer a DUT must refuse."},
+    "arduino_ota": {"port": 3232, "protocol": "tcp", "client_usable": "indirect", "note": "Target port for POST /api/ota."},
+    "port_arithmetic_warning": "Observed per-slot values follow 4000+n / 3332+n / 4443+n / 5000+n, but they are configuration. ALWAYS read them from /api/devices."
+  },
+
+  "capabilities": {
+    "slots_serial_flash": "available",
+    "native_usb_jtag_debug": "available",
+    "external_probe_debug": "unavailable",
+    "external_probe_note": "GET /api/debug/probes returns []; no ESP-Prog attached.",
+    "wifi_ap_sta_scan_provision_relay": "available",
+    "mqtt_broker": "available",
+    "tls_mirror": "available",
+    "ble": "available",
+    "udp_logging": "available",
+    "gpio": "partial",
+    "gpio_note": "Pins configured (18=BOOT, 17=EN) but gpio_wired is null: wiring was never measured. Only a successful POST /api/serial/gpio-test authorises GPIO-based recovery.",
+    "signal_generator": "partial",
+    "signal_generator_note": "Only the Pi's gpclk backend exists. No Si5351, no PE4302 attenuator. Frequencies are discrete: enumerate GET /api/siggen/frequencies rather than sweeping. The status flag hardware.pe4302 may read true optimistically; do not rely on attenuation.",
+    "sdr": "unavailable",
+    "sdr_note": "available:false, hardware.device:false — rtl_433/rtl_test installed but no dongle. All /api/sdr/* endpoints fail or report unavailable.",
+    "rf_loopback": "unavailable"
+  },
+
+  "endpoints": [
+    {
+      "id": "get_info",
+      "group": "system",
+      "method": "GET",
+      "path": "/api/info",
+      "purpose": "Host identity and slot counters.",
+      "params": [],
+      "returns": {"ok": "bool", "host_ip": "string", "hostname": "string", "slots_configured": "int", "slots_running": "int"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "bench_reset",
+      "group": "system",
+      "method": "POST",
+      "path": "/api/bench/reset",
+      "purpose": "Return the whole bench to a defined baseline. The first call of every run: a run that starts from what the last one left behind is measuring history. Stops debug sessions, restarts every present slot's proxy unconditionally, stops the SoftAP, leaves any joined network, stops SDR work, clears a pending operator prompt, ends the test session, and ensures (never stops) the MQTT broker.",
+      "params": [],
+      "returns": {"ok": "bool", "changed": "array[string]", "errors": "array[string]"},
+      "success_predicate": "ok == true AND errors == []. `changed` is free-form English prose, not a machine-readable structure — report it verbatim to your operator rather than parsing it.",
+      "blocking": true,
+      "timeout_s": 90,
+      "availability": "available",
+      "notes": "Every step is attempted even if an earlier one fails. An empty `changed` means the bench was already clean. Also the only documented way to unwedge an RFC2217 port stuck in CLOSE-WAIT after a client died mid-flash. DESTRUCTIVE AND UNARBITRATED: it stops all debug sessions, releases all grants and clears a pending operator prompt, and the API has no auth or run lock — two plugins sharing this bench will destroy each other's state. Treat the bench as single-tenant during a run, and report `changed` rather than hiding it."
+    },
+    {
+      "id": "get_log",
+      "group": "system",
+      "method": "GET",
+      "path": "/api/log",
+      "purpose": "Activity log entries.",
+      "params": [
+        {"name": "since", "in": "query", "type": "string", "required": false, "default": null, "note": "ISO-8601 timestamp; compared lexically against entry ts."}
+      ],
+      "returns": {"ok": "bool", "entries": "array[{ts,msg,cat}]"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "wifi_ping",
+      "group": "system",
+      "method": "GET",
+      "path": "/api/wifi/ping",
+      "purpose": "Bench reachability probe. Answers in every Wi-Fi mode, including serial-interface.",
+      "params": [],
+      "returns": {"ok": "bool", "fw_version": "string", "uptime": "int"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "get_devices",
+      "group": "slots",
+      "method": "GET",
+      "path": "/api/devices",
+      "purpose": "The discovery call: every slot with its ports, state, chip and USB topology. Read tcp_port, gdb_port, openocd_telnet_port and monitor_port from here; never compute them.",
+      "params": [],
+      "returns": {"ok": "bool", "slots": "array[slot]", "host_ip": "string", "hostname": "string"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Sorted lexicographically by label, so SLOT10 precedes SLOT2 — sort numerically yourself. debug_chip and debug_gdb_port are ABSENT unless debugging is true. This call is not purely passive: it clears aged-out flapping flags and may restart a dead proxy, so polling it is part of the recovery mechanism.",
+      "slot_schema": {
+        "always_present": {
+          "label": "string — SLOT<n> for configured slots, AUTO-<n> for dynamic",
+          "slot_key": "string — _fixed_SLOT<n> for configured slots, else a udev ID_PATH",
+          "tcp_port": "int",
+          "gdb_port": "int",
+          "openocd_telnet_port": "int",
+          "monitor_port": "int|null — may be stale after the proxy stops",
+          "url": "string|null — rfc2217://host:port; may be non-null while running is false",
+          "present": "bool",
+          "running": "bool",
+          "pid": "int|null",
+          "devnode": "string|null",
+          "devnodes": "array[string]",
+          "state": "string — one of the nine slot_states",
+          "debugging": "bool",
+          "detected_chip": "string|null",
+          "jtag_slot": "string|null",
+          "is_probe": "bool",
+          "usb_devices": "array[{product,vid_pid}]",
+          "usb_warning": "string|null",
+          "group": "null",
+          "role": "null",
+          "gpio_boot": "int|null",
+          "gpio_en": "int|null",
+          "has_gpio": "bool",
+          "gpio_wired": "bool|null",
+          "gpio_wired_detail": "string|null",
+          "flapping": "bool",
+          "recovering": "bool",
+          "recover_retries": "int",
+          "last_error": "string|null",
+          "last_action": "string|null",
+          "last_event_ts": "string|null",
+          "seq": "int — bench-wide event counter, not per-slot"
+        },
+        "conditional": {
+          "debug_chip": "string|null — only when debugging is true",
+          "debug_gdb_port": "int|null — only when debugging is true"
+        }
+      }
+    },
+    {
+      "id": "slot_mode",
+      "group": "slots",
+      "method": "GET",
+      "path": "/api/slot/mode",
+      "purpose": "Current access grant for a slot.",
+      "params": [{"name": "slot", "in": "query", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "mode": "string", "owner": "string|null", "since": "string|null", "expires_in": "float|null"},
+      "status_codes": {"200": "answered", "404": "unknown slot label — {ok:false,error:\"slot 'X' not found\"}"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "An unclaimed slot answers {ok:true,mode:'idle',owner:null,since:null,expires_in:null} (verified live). With no grant but an active debug session it reports mode 'debugging', owner 'debug-session'. Use it to see CLAIMS and intent — it does not gate flashing, and leasing does not block anything (leases are advisory)."
+    },
+    {
+      "id": "slot_acquire",
+      "group": "slots",
+      "method": "POST",
+      "path": "/api/slot/acquire",
+      "purpose": "Take a lease on a slot to signal intent to other cooperating clients. ADVISORY ONLY — no work handler consults the grant table, so this creates no lock and blocks nothing.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": true},
+        {"name": "mode", "in": "body", "type": "string", "required": true, "note": "One of the slot_lease_modes."},
+        {"name": "owner", "in": "body", "type": "string", "required": true},
+        {"name": "ttl", "in": "body", "type": "float", "required": false, "default": 60}
+      ],
+      "returns": {"ok": "bool", "token": "string", "mode": "string", "expires_in": "float"},
+      "status_codes": {"200": "granted", "400": "unknown mode / missing owner", "409": "held, or device held out of band"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "A 409 is a normal outcome, not an exception: read who holds the slot and why. The manager refuses and never pre-empts. 409 bodies: {error:'held',mode,owner,since,expires_in}, {error:'held',mode:'debugging',owner:'debug-session'}, or {error:'device held out of band',pid,cmdline}. IMPORTANT: the grant is advisory — no work handler consults it, so acquiring does not lock anything and a 409 does not mean another client's flash is blocked or blocking you. Use it for cooperation and visibility only. Size `ttl` to the operation (a flash can take 300 s), not to the 60 s default."
+    },
+    {
+      "id": "slot_renew",
+      "group": "slots",
+      "method": "POST",
+      "path": "/api/slot/renew",
+      "purpose": "Extend a lease by the ttl it was granted with.",
+      "params": [{"name": "token", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "expires_in": "float"},
+      "status_codes": {"200": "renewed", "404": "unknown or expired token"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "slot_release",
+      "group": "slots",
+      "method": "POST",
+      "path": "/api/slot/release",
+      "purpose": "Return a slot to idle.",
+      "params": [{"name": "token", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "mode": "idle"},
+      "status_codes": {"200": "released", "404": "unknown token"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "proxy_start",
+      "group": "slots",
+      "method": "POST",
+      "path": "/api/start",
+      "purpose": "Start a slot's RFC2217 proxy directly. Diagnostic only.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": false, "note": "Either slot label or slot_key."},
+        {"name": "slot_key", "in": "body", "type": "string", "required": false},
+        {"name": "devnode", "in": "body", "type": "string", "required": false}
+      ],
+      "returns": {"ok": "bool", "slot_key": "string", "running": "bool"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Bypasses the lease manager. bench_reset already does the right thing; do not build this into normal flows."
+    },
+    {
+      "id": "proxy_stop",
+      "group": "slots",
+      "method": "POST",
+      "path": "/api/stop",
+      "purpose": "Stop a slot's RFC2217 proxy directly. Diagnostic only.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": false},
+        {"name": "slot_key", "in": "body", "type": "string", "required": false}
+      ],
+      "returns": {"ok": "bool", "slot_key": "string", "running": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "serial_write",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/write",
+      "purpose": "Send bytes to a DUT. The correct way to write; opening rfc2217:// directly asserts DTR/RTS and halts native-USB boards.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": true},
+        {"name": "text", "in": "body", "type": "string", "required": false, "note": "Mutually exclusive with hex."},
+        {"name": "hex", "in": "body", "type": "string", "required": false, "note": "Mutually exclusive with text."},
+        {"name": "newline", "in": "body", "type": "bool", "required": false, "default": true, "note": "A console command without a newline is never executed, which reads as the device ignoring it."}
+      ],
+      "returns": {"ok": "bool", "written": "int"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Message is 'need text or hex' when neither is given; bad hex is a 400. Some slot-not-found paths answer 200 with ok:false."
+    },
+    {
+      "id": "serial_monitor",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/monitor",
+      "purpose": "Blocking read until pattern matches or timeout expires. Reads the read-only fan-out, so it coexists with a writing client.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": true},
+        {"name": "pattern", "in": "body", "type": "string", "required": false, "default": null},
+        {"name": "timeout", "in": "body", "type": "float", "required": false, "default": 10}
+      ],
+      "returns": {"ok": "bool", "matched": "bool", "line": "string|null", "output": "array[string]"},
+      "success_predicate": "matched == true. `ok` is true even on timeout, so it cannot be the success test.",
+      "blocking": true,
+      "timeout_s": 10,
+      "availability": "available",
+      "notes": "A TIMEOUT STILL RETURNS ok:true — the reply is {ok:true, matched:false, line:null, output:[]} (verified live), so gate on `matched`, never on `ok`. `pattern` is a case-sensitive substring match against each stripped line; omitting it is legal and yields matched:false after the timeout. A reply to a one-line command can arrive in milliseconds, so either start the monitor BEFORE writing or write and then read GET /api/serial/output — the portal records continuously, which makes write-then-read the reliable primary pattern."
+    },
+    {
+      "id": "serial_output",
+      "group": "serial",
+      "method": "GET",
+      "path": "/api/serial/output",
+      "purpose": "Passive read of a slot's serial ring buffer.",
+      "params": [
+        {"name": "slot", "in": "query", "type": "string", "required": true},
+        {"name": "lines", "in": "query", "type": "int", "required": false, "default": 50},
+        {"name": "since", "in": "query", "type": "float", "required": false, "default": 0}
+      ],
+      "returns": {"ok": "bool", "lines": "array[{ts,text}]"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Ring holds 1000 lines per slot. `since` is EXCLUSIVE (>): passing the last ts you saw returns only strictly newer lines, which is what makes incremental polling correct (verified live). `lines` has NO upper clamp — lines=99999 returns the whole ring."
+    },
+    {
+      "id": "serial_reset",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/reset",
+      "purpose": "Reboot the DUT (DTR/RTS), capturing boot output. When debugging, resets over JTAG instead.",
+      "params": [{"name": "slot", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "output": "array[string]"},
+      "blocking": true,
+      "timeout_s": 7,
+      "availability": "available"
+    },
+    {
+      "id": "serial_release",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/release",
+      "purpose": "Release BOOT to high-Z and pulse EN, clearing download_mode.",
+      "params": [{"name": "slot", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Use after any flash that leaves the board in download mode."
+    },
+    {
+      "id": "serial_recover",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/recover",
+      "purpose": "Start flap recovery for a slot.",
+      "params": [{"name": "slot", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "started": "bool", "message": "string", "outcome_at": "string"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Returns 'started', not the outcome. Poll /api/devices for the result."
+    },
+    {
+      "id": "serial_gpio_test",
+      "group": "serial",
+      "method": "POST",
+      "path": "/api/serial/gpio-test",
+      "purpose": "Measure whether BOOT/EN are physically wired on this slot. The only thing that can set gpio_wired.",
+      "params": [{"name": "slot", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "en_wired": "bool", "boot_wired": "bool", "detail": "string"},
+      "blocking": true,
+      "timeout_s": 15,
+      "availability": "available",
+      "notes": "No software can see a wire; has_gpio only means pins are configured. Until this passes, GPIO-based recovery must not be used on the slot."
+    },
+
+    {
+      "id": "flash",
+      "group": "flash",
+      "method": "POST",
+      "path": "/api/flash",
+      "purpose": "Flash a board through the portal: stops the proxy, runs esptool on the Pi against the devnode, restarts the proxy, hard-resets. Also stops a live debug session first and restores it afterwards with `reset run`.",
+      "content_type": "multipart/form-data",
+      "params": [
+        {"name": "slot", "in": "form", "type": "string", "required": true},
+        {"name": "chip", "in": "form", "type": "string", "required": false, "default": "auto"},
+        {"name": "baud", "in": "form", "type": "string", "required": false, "default": "921600"},
+        {"name": "flash_mode", "in": "form", "type": "string", "required": false, "default": "dio", "note": "Overridden by flash_args when that part is present."},
+        {"name": "flash_freq", "in": "form", "type": "string", "required": false, "default": "40m"},
+        {"name": "flash_size", "in": "form", "type": "string", "required": false, "default": "keep"},
+        {"name": "erase", "in": "form", "type": "string", "required": false, "default": "0", "note": "OFF unless truthy: 1, true, yes, on. erase=1 wipes NVS and calibration data."},
+        {"name": "bin@<offset>", "in": "file", "type": "binary", "required": false, "note": "Image-part form A. The PART NAME carries the offset; the part's filename becomes the file key. See offset_parsing and image_part_forms."},
+        {"name": "flash_args", "in": "file", "type": "text", "required": false, "note": "Image-part form B. esptool's own build/flash_args; upload it plus every .bin it references, each as a part named by its bare basename."}
+      ],
+      "returns": {"ok": "bool", "output": "string", "returncode": "int"},
+      "status_codes": {"200": "ok true or false", "400": "no image parts / invalid offset / flash_args references a missing file / bad part name", "500": "esptool failed"},
+      "blocking": true,
+      "timeout_s": 300,
+      "availability": "available",
+      "offset_parsing": "The portal parses the offset with int(offset, 0), which AUTO-DETECTS the base. So bin@0x8000 is hex 32768, but bin@8000 is DECIMAL 8000 (0x1F40) — a silently wrong address and a board that will not boot. ALWAYS write the 0x prefix. 0o and 0b are also accepted; an unparseable offset is rejected with 400 \"invalid offset in '<name>'\".",
+      "image_part_forms": {
+        "A_bin_at_offset": "One or more parts whose NAME matches bin@<offset> (lowercase, exact — 'Bin@0x0' does not match and is stored as a plain file, then the request fails with 400 'no binaries to flash').",
+        "B_flash_args": "A text part named flash_args in esptool @flash_args format, plus each referenced .bin as its own part named by bare basename. Offsets AND --flash_mode/--flash_freq/--flash_size come from the file. A referenced file that was not uploaded fails 400 'flash_args references <name> but it was not uploaded'."
+      },
+      "notes": "Two independent image forms; form B is preferable when you have an ESP-IDF build because the offsets come from the build itself. Part filenames must not contain '/' or '..' (400 path traversal). No serial_reset is needed afterwards: the portal forces --before default_reset --after hard_reset, so the board ends up running. This endpoint does NOT refuse on a live debug session — it stops it and restores it with reset run, CPU left running (pi/portal.py:1991-2003, 2063-2075). The 409-on-debugging refusal belongs to slot/acquire, not here."
+    },
+    {
+      "id": "flash_read",
+      "group": "flash",
+      "method": "POST",
+      "path": "/api/flash/read",
+      "purpose": "Read a region of flash back as base64 with a sha256.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": true},
+        {"name": "offset", "in": "body", "type": "int|string", "required": true, "note": "int or 0x-string."},
+        {"name": "length", "in": "body", "type": "int", "required": true},
+        {"name": "chip", "in": "body", "type": "string", "required": false, "default": "auto"}
+      ],
+      "returns": {"ok": "bool", "offset": "int", "length": "int", "sha256": "string", "data_b64": "string"},
+      "blocking": true,
+      "timeout_s": 120,
+      "availability": "available"
+    },
+    {
+      "id": "chip_info",
+      "group": "flash",
+      "method": "POST",
+      "path": "/api/chip/info",
+      "purpose": "Identify the part: chip, revision, features, crystal, usb_mode, MAC and flash identity.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": true},
+        {"name": "chip", "in": "body", "type": "string", "required": false, "default": "auto"}
+      ],
+      "returns": {"ok": "bool", "output": "string", "returncode": "int", "chip": "string", "revision": "string", "mac": "string", "features": "string", "flash_size": "string"},
+      "status_codes": {"200": "answered", "400": "unknown slot", "502": "device did not answer esptool"},
+      "blocking": true,
+      "timeout_s": 60,
+      "availability": "available",
+      "notes": "The ONLY per-board identifier on the bench. Use the MAC to confirm you are talking to the intended board; labels identify sockets, not devices. There is NO 409 for a live debug session: chip/info runs through flash_device, which stops the session, runs `flash-id`, then reattaches with the CPU running. A device that does not answer is 502, not 500."
+    },
+
+    {
+      "id": "wifi_mode_get",
+      "group": "wifi",
+      "method": "GET",
+      "path": "/api/wifi/mode",
+      "purpose": "Current radio mode.",
+      "params": [],
+      "returns": {"ok": "bool", "mode": "string", "ssid": "string", "ip": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "wifi_mode_set",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/mode",
+      "purpose": "Switch radio mode.",
+      "params": [
+        {"name": "mode", "in": "body", "type": "string", "required": true, "note": "wifi-testing or serial-interface."},
+        {"name": "ssid", "in": "body", "type": "string", "required": false, "note": "Required for serial-interface."},
+        {"name": "pass", "in": "body", "type": "string", "required": false}
+      ],
+      "returns": {"ok": "bool", "mode": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ap_start",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/ap_start",
+      "purpose": "Start the SoftAP for Wi-Fi testing.",
+      "params": [
+        {"name": "ssid", "in": "body", "type": "string", "required": true},
+        {"name": "pass", "in": "body", "type": "string", "required": false, "default": "", "note": "THE FIELD IS 'pass'. A 'password' key is silently ignored and the AP starts OPEN."},
+        {"name": "channel", "in": "body", "type": "int", "required": false, "default": 6},
+        {"name": "internet", "in": "body", "type": "bool", "required": false, "default": false}
+      ],
+      "returns": {"ok": "bool", "ip": "192.168.4.1"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "AP and STA are mutually exclusive: starting one stops the other."
+    },
+    {
+      "id": "ap_stop",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/ap_stop",
+      "purpose": "Stop the SoftAP.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ap_status",
+      "group": "wifi",
+      "method": "GET",
+      "path": "/api/wifi/ap_status",
+      "purpose": "SoftAP state and connected stations.",
+      "params": [],
+      "returns": {"ok": "bool", "active": "bool", "ssid": "string", "channel": "int", "stations": "array[{mac,ip}]"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Read DUT addresses here. Never assume one; the DHCP pool is 192.168.4.2-192.168.4.20."
+    },
+    {
+      "id": "wifi_scan",
+      "group": "wifi",
+      "method": "GET",
+      "path": "/api/wifi/scan",
+      "purpose": "Scan for Wi-Fi networks.",
+      "params": [],
+      "returns": {"ok": "bool", "networks": "array"},
+      "status_codes": {"200": "ok", "503": "radio refused"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "An empty networks list means the air was empty; it never means the scan failed. While the AP is running the scan is REFUSED with HTTP 503 and a body that has NO ok key: {\"error\":\"cannot scan while the AP is running: this radio cannot beacon and survey at once. Stop the AP first (POST /api/wifi/ap_stop).\"} — treat it as a mode condition, and read body.get(\"ok\")."
+    },
+    {
+      "id": "sta_join",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/sta_join",
+      "purpose": "Join a network as a station.",
+      "params": [
+        {"name": "ssid", "in": "body", "type": "string", "required": true},
+        {"name": "pass", "in": "body", "type": "string", "required": false, "default": ""},
+        {"name": "timeout", "in": "body", "type": "float", "required": false, "default": 15}
+      ],
+      "returns": {"ok": "bool", "ip": "string", "gateway": "string"},
+      "blocking": true,
+      "timeout_s": 15,
+      "availability": "available",
+      "notes": "Never join the house LAN as a station test: eth0 already routes there, so the association proves nothing and the test passes on the strength of the failure it exists to catch."
+    },
+    {
+      "id": "sta_leave",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/sta_leave",
+      "purpose": "Leave the joined network.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "wifi_http",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/wifi/http",
+      "purpose": "Relay an HTTP request from the Pi to a device on the test network. How you reach a DUT's own web server.",
+      "params": [
+        {"name": "method", "in": "body", "type": "string", "required": false, "default": "GET"},
+        {"name": "url", "in": "body", "type": "string", "required": true},
+        {"name": "headers", "in": "body", "type": "object", "required": false},
+        {"name": "body", "in": "body", "type": "string", "required": false, "note": "base64-encoded."},
+        {"name": "timeout", "in": "body", "type": "float", "required": false, "default": 10}
+      ],
+      "returns": {"ok": "bool", "status": "int", "headers": "object", "body": "string"},
+      "blocking": true,
+      "timeout_s": 10,
+      "availability": "available",
+      "notes": "The response body is base64."
+    },
+    {
+      "id": "wifi_events",
+      "group": "wifi",
+      "method": "GET",
+      "path": "/api/wifi/events",
+      "purpose": "Long-poll station join/leave events on the SoftAP (DHCP leases).",
+      "params": [{"name": "timeout", "in": "query", "type": "float", "required": false, "default": 0, "note": "0 returns immediately."}],
+      "returns": {"ok": "bool", "events": "array"},
+      "blocking": true,
+      "timeout_s": 0,
+      "availability": "available"
+    },
+    {
+      "id": "enter_portal",
+      "group": "wifi",
+      "method": "POST",
+      "path": "/api/enter-portal",
+      "purpose": "Provision a captive-portal DUT onto the bench AP (join its portal, submit credentials, leave, raise the AP).",
+      "params": [
+        {"name": "portal_ssid", "in": "body", "type": "string", "required": false, "default": "iOS-Keyboard-Setup"},
+        {"name": "portal_ip", "in": "body", "type": "string", "required": false, "default": "192.168.4.1"},
+        {"name": "ssid", "in": "body", "type": "string", "required": true},
+        {"name": "password", "in": "body", "type": "string", "required": false},
+        {"name": "save_path", "in": "body", "type": "string", "required": false, "default": "/connect"},
+        {"name": "field_ssid", "in": "body", "type": "string", "required": false, "default": "ssid"},
+        {"name": "field_password", "in": "body", "type": "string", "required": false, "default": "password"},
+        {"name": "extra", "in": "body", "type": "object", "required": false},
+        {"name": "method", "in": "body", "type": "string", "required": false, "default": "POST"},
+        {"name": "internet", "in": "body", "type": "bool", "required": false, "default": false}
+      ],
+      "returns": {"ok": "bool", "message": "string"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "ASYNCHRONOUS: a 200 means started, not provisioned. Internally it joins the DUT's portal as a STATION, submits credentials, leaves, then raises the bench AP on `ssid` — so do NOT call ap_start first, and do not expect the bench AP to exist until the DUT has been provisioned. Poll GET /api/wifi/ap_status: first until active:true, then until stations[] is non-empty. Read body.get(\"ok\"): failures come back at HTTP 200. A second concurrent call returns ok:false, error 'enter-portal already running'. NOTE the field name: this endpoint takes `password`, while ap_start takes `pass`. stations[] carries {mac,ip} and nothing binds it to the board you provisioned — snapshot the list before starting, accept exactly one NEW station, and correlate via /api/udplog `source` or the chip/info MAC if two appear."
+    },
+
+    {
+      "id": "net_portscan",
+      "group": "net",
+      "method": "POST",
+      "path": "/api/net/portscan",
+      "purpose": "TCP connect check of ONE host on the test AP subnet.",
+      "params": [
+        {"name": "host", "in": "body", "type": "string", "required": true, "note": "Must be inside 192.168.4.0/24 and not the Pi."},
+        {"name": "ports", "in": "body", "type": "string", "required": false, "default": "1-65535"},
+        {"name": "timeout_s", "in": "body", "type": "float", "required": false, "default": 120, "note": "Clamped 1..600."}
+      ],
+      "returns": {"ok": "bool", "host": "string", "open": "array[int]", "scanned": "int", "complete": "bool", "elapsed_s": "float"},
+      "success_predicate": "complete == true. A truncated scan still returns ok:true.",
+      "status_codes": {"200": "ok", "400": "refused target or bad spec"},
+      "blocking": true,
+      "timeout_s": 120,
+      "availability": "available",
+      "notes": "Any LAN address, hostname, network range, broadcast or network address is refused with 400 and no connection attempt. The bench must not be used to probe the owner's LAN."
+    },
+
+    {
+      "id": "mqtt_status",
+      "group": "mqtt",
+      "method": "GET",
+      "path": "/api/mqtt/status",
+      "purpose": "Test broker state.",
+      "params": [],
+      "returns": {"ok": "bool", "running": "bool", "port": "int|null"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "mqtt_start",
+      "group": "mqtt",
+      "method": "POST",
+      "path": "/api/mqtt/start",
+      "purpose": "Start the mosquitto test broker on 1883.",
+      "params": [],
+      "returns": {"ok": "bool", "port": 1883},
+      "status_codes": {"200": "ok", "500": "failed to start"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "mqtt_stop",
+      "group": "mqtt",
+      "method": "POST",
+      "path": "/api/mqtt/stop",
+      "purpose": "Stop the test broker.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "bench_reset never stops the broker: it is shared infrastructure."
+    },
+
+    {
+      "id": "tls_mirror_status",
+      "group": "tls",
+      "method": "GET",
+      "path": "/api/tls-mirror/status",
+      "purpose": "Untrusted HTTPS mirror state and certificate fingerprint.",
+      "params": [],
+      "returns": {"ok": "bool", "running": "bool", "port": 8443, "sha256": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "tls_mirror_start",
+      "group": "tls",
+      "method": "POST",
+      "path": "/api/tls-mirror/start",
+      "purpose": "Serve the firmware repository over HTTPS with a self-signed certificate — a TLS peer a DUT must refuse.",
+      "params": [],
+      "returns": {"ok": "bool", "running": "bool", "port": 8443},
+      "status_codes": {"200": "ok", "500": "failed to start"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "tls_mirror_stop",
+      "group": "tls",
+      "method": "POST",
+      "path": "/api/tls-mirror/stop",
+      "purpose": "Stop the untrusted HTTPS mirror.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "debug_status",
+      "group": "debug",
+      "method": "GET",
+      "path": "/api/debug/status",
+      "purpose": "Per-slot OpenOCD session state.",
+      "params": [],
+      "returns": {"ok": "bool", "slots": "object"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Each slot maps to {debugging:true, chip, gdb_port, telnet_port, pid, probe} or {debugging:false}."
+    },
+    {
+      "id": "debug_probes",
+      "group": "debug",
+      "method": "GET",
+      "path": "/api/debug/probes",
+      "purpose": "Configured debug probes.",
+      "params": [],
+      "returns": {"ok": "bool", "probes": "array[{label,type,in_use,slot}]"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Empty on this bench: no ESP-Prog attached."
+    },
+    {
+      "id": "debug_group",
+      "group": "debug",
+      "method": "GET",
+      "path": "/api/debug/group",
+      "purpose": "Slots grouped by group/role, for pairing two interfaces of one board.",
+      "params": [],
+      "returns": {"ok": "bool", "groups": "object"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "ALWAYS returns {groups:{}} in this build: _make_slot accepts group/role but no call site populates them. Do not build pairing on this; identify boards by MAC from chip_info."
+    },
+    {
+      "id": "debug_start",
+      "group": "debug",
+      "method": "POST",
+      "path": "/api/debug/start",
+      "purpose": "Start an OpenOCD session for a slot.",
+      "params": [
+        {"name": "slot", "in": "body", "type": "string", "required": false, "note": "Optional: auto-finds the first present slot."},
+        {"name": "chip", "in": "body", "type": "string", "required": false},
+        {"name": "probe", "in": "body", "type": "string", "required": false}
+      ],
+      "returns": {"ok": "bool", "slot": "string", "chip": "string", "gdb_port": "int", "telnet_port": "int", "probe": "string|null", "gdb_target": "string"},
+      "status_codes": {"200": "ok true OR false — check ok", "404": "no device found / slot not found"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Only native-USB parts (Espressif VID 303a) have built-in JTAG. A slot in state 'debugging' rejects serial/reset, serial/monitor and enter-portal, and refuses non-debugging slot leases (409) — but it does NOT block flashing: /api/flash stops the session and restores it with `reset run`."
+    },
+    {
+      "id": "debug_stop",
+      "group": "debug",
+      "method": "POST",
+      "path": "/api/debug/stop",
+      "purpose": "Stop an OpenOCD session (issues reset run first).",
+      "params": [{"name": "slot", "in": "body", "type": "string", "required": false}],
+      "returns": {"ok": "bool", "slot": "string"},
+      "blocking": false,
+      "availability": "available",
+      "notes": "Not required before flashing: /api/flash and /api/chip/info stop the session themselves and restore it with `reset run`. Call this only when you want the session gone permanently."
+    },
+
+    {
+      "id": "gpio_status",
+      "group": "gpio",
+      "method": "GET",
+      "path": "/api/gpio/status",
+      "purpose": "State of claimed GPIO lines.",
+      "params": [],
+      "returns": {"ok": "bool", "pins": "object"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "gpio_set",
+      "group": "gpio",
+      "method": "POST",
+      "path": "/api/gpio/set",
+      "purpose": "Drive one allowed BCM pin.",
+      "params": [
+        {"name": "pin", "in": "body", "type": "int", "required": true, "note": "Must be in the gpio_allowlist."},
+        {"name": "value", "in": "body", "type": "int|string", "required": true, "note": "0, 1, or 'z' (input with pull-up = released)."}
+      ],
+      "returns": {"ok": "bool", "pin": "int", "value": "int|string"},
+      "status_codes": {"200": "ok", "400": "missing pin/value, pin not allowed, or bad value"},
+      "blocking": false,
+      "availability": "partial",
+      "prerequisite": "POST /api/serial/gpio-test for that slot must have reported gpio_wired:true. GET /api/gpio/status reports pin ownership only and says nothing about wiring; on this bench gpio_wired is null, so GPIO control is unverified. Gate the tool on that measurement, don't assume it.",
+      "notes": "ALWAYS release with 'z' when done: a pin left LOW prevents the DUT from booting and the next user will not know why. On this bench gpio_wired is null (never measured), so do not treat has_gpio as proof of wiring."
+    },
+
+    {
+      "id": "ble_status",
+      "group": "ble",
+      "method": "GET",
+      "path": "/api/ble/status",
+      "purpose": "BLE bridge state.",
+      "params": [],
+      "returns": {"ok": "bool", "state": "string", "address": "string", "name": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ble_scan",
+      "group": "ble",
+      "method": "POST",
+      "path": "/api/ble/scan",
+      "purpose": "Scan for BLE peripherals.",
+      "params": [
+        {"name": "timeout", "in": "body", "type": "float", "required": false, "default": 0},
+        {"name": "name_filter", "in": "body", "type": "string", "required": false, "default": ""}
+      ],
+      "returns": {"ok": "bool", "devices": "array"},
+      "status_codes": {"200": "ok (may be ok:false)", "501": "bleak not installed"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ble_connect",
+      "group": "ble",
+      "method": "POST",
+      "path": "/api/ble/connect",
+      "purpose": "Connect to a BLE device.",
+      "params": [{"name": "address", "in": "body", "type": "string", "required": true}],
+      "returns": {"ok": "bool", "address": "string", "name": "string", "services": "array"},
+      "status_codes": {"200": "connected", "409": "connect failed"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ble_disconnect",
+      "group": "ble",
+      "method": "POST",
+      "path": "/api/ble/disconnect",
+      "purpose": "Disconnect BLE.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "ble_write",
+      "group": "ble",
+      "method": "POST",
+      "path": "/api/ble/write",
+      "purpose": "Write to a GATT characteristic.",
+      "params": [
+        {"name": "characteristic", "in": "body", "type": "string", "required": true},
+        {"name": "data", "in": "body", "type": "string", "required": true, "note": "Hex string; spaces stripped."},
+        {"name": "response", "in": "body", "type": "bool", "required": false, "default": true}
+      ],
+      "returns": {"ok": "bool", "bytes_written": "int"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "firmware_list",
+      "group": "firmware",
+      "method": "GET",
+      "path": "/api/firmware/list",
+      "purpose": "List stored firmware images.",
+      "params": [],
+      "returns": {"ok": "bool", "files": "array[{project,filename,size,modified}]"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "firmware_upload",
+      "group": "firmware",
+      "method": "POST",
+      "path": "/api/firmware/upload",
+      "content_type": "multipart/form-data",
+      "purpose": "Store a firmware image on the Pi for ESP32 HTTP OTA pulls.",
+      "params": [
+        {"name": "project", "in": "form", "type": "string", "required": true},
+        {"name": "file", "in": "file", "type": "binary", "required": true, "note": "Part name must be exactly 'file'."}
+      ],
+      "returns": {"ok": "bool", "project": "string", "filename": "string", "size": "int"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "firmware_delete",
+      "group": "firmware",
+      "method": "DELETE",
+      "path": "/api/firmware/delete",
+      "purpose": "Delete a stored image.",
+      "params": [
+        {"name": "project", "in": "body", "type": "string", "required": true},
+        {"name": "filename", "in": "body", "type": "string", "required": true}
+      ],
+      "returns": {"ok": "bool"},
+      "status_codes": {"200": "deleted", "400": "missing field or path traversal", "404": "not found"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "firmware_download",
+      "group": "firmware",
+      "method": "GET",
+      "path": "/firmware/<project>/<filename>",
+      "purpose": "Binary firmware download. This is what a DUT pulls for HTTP OTA.",
+      "params": [],
+      "returns": "application/octet-stream",
+      "success_predicate": "HTTP 200 with a non-empty binary body. There is no `ok` field here at all — an error is a JSON {\"error\": ...} body — so test the status and Content-Type rather than parsing JSON.",
+      "blocking": false,
+      "availability": "available",
+      "notes": "Non-JSON. Errors are {error:...} WITHOUT ok. No CORS header."
+    },
+    {
+      "id": "ota",
+      "group": "firmware",
+      "method": "POST",
+      "path": "/api/ota",
+      "content_type": "multipart/form-data",
+      "purpose": "Push firmware to a deployed (off-USB, on-LAN) board via ArduinoOTA, relayed by the Pi.",
+      "params": [
+        {"name": "target", "in": "form", "type": "string", "required": true, "note": "Board IP."},
+        {"name": "port", "in": "form", "type": "string", "required": false, "default": "3232"},
+        {"name": "auth", "in": "form", "type": "string", "required": false, "note": "The DUT's ArduinoOTA password, not yours."},
+        {"name": "firmware", "in": "file", "type": "binary", "required": true, "note": "Part name must be exactly 'firmware'."}
+      ],
+      "returns": {"ok": "bool", "returncode": "int", "output": "string"},
+      "status_codes": {"200": "done", "500": "failed", "501": "espota.py not installed", "504": "timed out"},
+      "blocking": true,
+      "timeout_s": 180,
+      "availability": "available"
+    },
+
+    {
+      "id": "udplog_get",
+      "group": "observability",
+      "method": "GET",
+      "path": "/api/udplog",
+      "purpose": "Read UDP debug-log lines pushed by DUTs to port 5555. Use when USB serial is occupied.",
+      "params": [
+        {"name": "since", "in": "query", "type": "float", "required": false, "default": 0, "note": "Epoch seconds — NOT ISO. Poll incrementally with the ts from the last call."},
+        {"name": "source", "in": "query", "type": "string", "required": false, "default": ""},
+        {"name": "limit", "in": "query", "type": "int", "required": false, "default": 200}
+      ],
+      "returns": {"ok": "bool", "lines": "array[{ts,source,line}]"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "udplog_clear",
+      "group": "observability",
+      "method": "DELETE",
+      "path": "/api/udplog",
+      "purpose": "Clear the UDP log buffer.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "human_status",
+      "group": "human",
+      "method": "GET",
+      "path": "/api/human/status",
+      "purpose": "Whether an operator prompt is pending.",
+      "params": [],
+      "returns": {"ok": "bool", "pending": "bool", "message": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "human_interaction",
+      "group": "human",
+      "method": "POST",
+      "path": "/api/human-interaction",
+      "purpose": "Ask the operator to do something physical and BLOCK until they click Done/Cancel on the Pi display or the timeout expires.",
+      "params": [
+        {"name": "message", "in": "body", "type": "string", "required": true},
+        {"name": "timeout", "in": "body", "type": "float", "required": false, "default": 120, "note": "No server-side cap."}
+      ],
+      "returns": {"ok": "bool", "confirmed": "bool", "timeout": "bool"},
+      "success_predicate": "confirmed == true. `ok` is true on operator timeout; an explicit Cancel yields confirmed:false with timeout:false, which is also not success.",
+      "status_codes": {"200": "answered or timed out", "400": "missing message", "409": "another request pending"},
+      "blocking": true,
+      "timeout_s": 120,
+      "availability": "available",
+      "notes": "Only one prompt can be pending at a time. Set a client timeout above the requested timeout."
+    },
+    {
+      "id": "human_done",
+      "group": "human",
+      "method": "POST",
+      "path": "/api/human/done",
+      "purpose": "Confirm the pending operator request programmatically.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "human_cancel",
+      "group": "human",
+      "method": "POST",
+      "path": "/api/human/cancel",
+      "purpose": "Cancel the pending operator request.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "test_progress",
+      "group": "test_panel",
+      "method": "GET",
+      "path": "/api/test/progress",
+      "purpose": "Test-session progress shown on the Pi's display.",
+      "params": [],
+      "returns": {"ok": "bool", "active": "bool", "spec": "string", "phase": "string", "total": "int", "completed": "int", "current": "string"},
+      "blocking": false,
+      "availability": "available"
+    },
+    {
+      "id": "test_update",
+      "group": "test_panel",
+      "method": "POST",
+      "path": "/api/test/update",
+      "purpose": "Drive the Pi display's test panel: start a session with spec, then current, then result, then end.",
+      "params": [
+        {"name": "spec", "in": "body", "type": "string", "required": false, "note": "Starts a new session."},
+        {"name": "phase", "in": "body", "type": "string", "required": false},
+        {"name": "total", "in": "body", "type": "int", "required": false},
+        {"name": "current", "in": "body", "type": "string", "required": false},
+        {"name": "result", "in": "body", "type": "object", "required": false},
+        {"name": "end", "in": "body", "type": "bool", "required": false}
+      ],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "available"
+    },
+
+    {
+      "id": "siggen_status",
+      "group": "signal_generator",
+      "method": "GET",
+      "path": "/api/siggen/status",
+      "purpose": "Signal-generator state and backend presence.",
+      "params": [],
+      "returns": {"ok": "bool", "active": "bool", "backend": "string|null", "freq_hz": "float", "hardware": "object"},
+      "blocking": false,
+      "availability": "partial",
+      "prerequisite": "Call this first and branch on `backend`: only gpclk exists on this bench (no Si5351, no PE4302), so expose the tool as a GPIO square-wave source, not an RF generator.",
+      "notes": "Only gpclk is real here: hardware is {si5351:false, gpclk:true, pe4302:true}, and the pe4302 flag is optimistic — do not rely on attenuation."
+    },
+    {
+      "id": "siggen_frequencies",
+      "group": "signal_generator",
+      "method": "GET",
+      "path": "/api/siggen/frequencies",
+      "purpose": "List frequencies this backend can actually produce.",
+      "params": [
+        {"name": "low", "in": "query", "type": "float", "required": false, "default": 3500000},
+        {"name": "high", "in": "query", "type": "float", "required": false, "default": 4000000},
+        {"name": "backend", "in": "query", "type": "string", "required": false, "default": "auto"}
+      ],
+      "returns": {"ok": "bool", "frequencies": "array[{freq_hz,tunable,range_hz}]"},
+      "blocking": false,
+      "availability": "partial",
+      "prerequisite": "Call GET /api/siggen/status first; only the gpclk backend is present on this bench.",
+      "notes": "gpclk reaches only discrete dividers. Enumerate and pick; never sweep blindly."
+    },
+    {
+      "id": "siggen_start",
+      "group": "signal_generator",
+      "method": "POST",
+      "path": "/api/siggen/start",
+      "purpose": "Start square-wave output (or Morse/CW keying).",
+      "params": [
+        {"name": "freq_hz", "in": "body", "type": "float", "required": false, "note": "Alias: freq."},
+        {"name": "backend", "in": "body", "type": "string", "required": false, "default": "auto"},
+        {"name": "channel", "in": "body", "type": "int", "required": false},
+        {"name": "pin", "in": "body", "type": "int", "required": false},
+        {"name": "atten_db", "in": "body", "type": "float", "required": false},
+        {"name": "morse", "in": "body", "type": "object", "required": false, "note": "Object with message/wpm/repeat. wpm must be nested here, not top-level."}
+      ],
+      "returns": {"ok": "bool", "active": "bool", "backend": "string", "freq_hz": "float"},
+      "blocking": false,
+      "availability": "partial",
+      "prerequisite": "Choose freq_hz from GET /api/siggen/frequencies; the gpclk backend cannot produce arbitrary frequencies. Do not rely on atten_db — there is no PE4302 on this bench."
+    },
+    {
+      "id": "siggen_stop",
+      "group": "signal_generator",
+      "method": "POST",
+      "path": "/api/siggen/stop",
+      "purpose": "Stop RF output.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "partial",
+      "prerequisite": "Only meaningful if GET /api/siggen/status reports active:true; the gpclk backend is the only one present."
+    },
+    {
+      "id": "siggen_atten",
+      "group": "signal_generator",
+      "method": "POST",
+      "path": "/api/siggen/atten",
+      "purpose": "Set PE4302 attenuation.",
+      "params": [{"name": "db", "in": "body", "type": "float", "required": true}],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "unavailable",
+      "notes": "No PE4302 attenuator on this bench."
+    },
+
+    {
+      "id": "sdr_endpoints",
+      "group": "sdr",
+      "method": "ANY",
+      "path": "/api/sdr/*",
+      "purpose": "RTL-SDR capture, analyze, power, acquire, live console, log, reset.",
+      "params": [],
+      "returns": {"ok": "bool", "available": false},
+      "blocking": false,
+      "availability": "unavailable",
+      "notes": "No dongle: GET /api/sdr/status reports available:false and hardware.device:false. Skip the whole group: capture/analyze/power/acquire/live-start/live-stop/live-poll/log-start/log-stop/reset/stop."
+    },
+
+    {
+      "id": "hotplug",
+      "group": "internal",
+      "method": "POST",
+      "path": "/api/hotplug",
+      "purpose": "udev ADD/REMOVE callback fired on the Pi itself.",
+      "params": [],
+      "returns": {"ok": "bool", "slot_key": "string", "seq": "int", "accepted": "bool"},
+      "blocking": false,
+      "availability": "never_call",
+      "notes": "Do not call. Exists so udev can inform the portal."
+    },
+    {
+      "id": "wifi_lease_event",
+      "group": "internal",
+      "method": "POST",
+      "path": "/api/wifi/lease_event",
+      "purpose": "dnsmasq lease-notify callback fired on the Pi itself.",
+      "params": [],
+      "returns": {"ok": "bool"},
+      "blocking": false,
+      "availability": "never_call",
+      "notes": "Do not call."
+    }
+  ],
+
+  "forbidden": [
+    "Never compute a port. Read tcp_port, gdb_port, openocd_telnet_port and monitor_port from GET /api/devices.",
+    "Never branch on HTTP status alone. Check the body's ok field; many failures return 200.",
+    "Never open rfc2217:// just to read or write. Use /api/serial/write, /api/serial/monitor, or the monitor_port fan-out.",
+    "Never call /api/debug/stop merely to flash: /api/flash and /api/chip/info stop the session themselves and restore it with the CPU running. The only hard refusal from a live debug session is slot/acquire with a mode other than 'debugging' (409).",
+    "Never leave a GPIO pin driven. Release with 'z'.",
+    "Never hardcode a slot label, TCP port, or DUT IP address.",
+    "Never point /api/net/portscan at the LAN. It is for 192.168.4.0/24 only.",
+    "Never address the bench by hostname or .local; use the IP.",
+    "Never drive the bench over SSH. Every observation has an endpoint.",
+    "Never treat detected_chip:null as absence, or an empty Wi-Fi scan as a failure.",
+    "Never build board pairing on group/role: both are always null in this build.",
+    "Never assume a DUT's IP: read it from GET /api/wifi/ap_status or wifi_events.",
+    "Never join the house LAN as a station test: eth0 already routes there, so the test proves nothing.",
+    "Never pre-empt a 409 slot conflict; report the incumbent and stop.",
+    "Never call /api/hotplug or /api/wifi/lease_event."
+  ],
+
+  "canonical_lifecycle": [
+    "GET  /api/wifi/ping          — is the bench reachable",
+    "POST /api/bench/reset        — known state; first call of every run",
+    "GET  /api/devices            — pick a slot, read its ports verbatim",
+    "POST /api/slot/acquire       — lease it (mode + ttl); 409 means report and stop",
+    "POST /api/flash              — multipart, bin@0x… parts or flash_args. Stops and restores any debug session itself, so NO debug/stop step is needed",
+    "POST /api/serial/reset       — reboot and capture boot output",
+    "POST /api/serial/write       — send a command",
+    "POST /api/serial/monitor     — confirm the expected reply",
+    "POST /api/wifi/ap_start      — stand up the test network",
+    "POST /api/enter-portal       — provision a captive-portal DUT (async; poll ap_status)",
+    "POST /api/wifi/http          — drive the DUT's own HTTP surface by station IP",
+    "POST /api/slot/release       — hand the slot back"
+  ]
+}

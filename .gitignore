@@ -15,3 +15,7 @@ __pycache__/
 # Local evidence only; the observations it supports are quoted in
 # TESTBENCH-PLUGIN-API.md.
 .bench-samples/
+
+# Scratch: probe scripts, log captures and subagent output produced while
+# commissioning. Working notes, not deliverables.
+.tmp/
